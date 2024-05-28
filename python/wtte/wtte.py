@@ -7,9 +7,13 @@ from math import log
 import warnings
 import numpy as np
 
+import keras
 from keras import backend as K
 from keras.callbacks import Callback
 
+import tensorflow as tf
+
+EPSILON = 1e-7
 
 def _keras_unstack_hack(ab):
     """Implements tf.unstack(y_true_keras, num=2, axis=-1).
@@ -19,12 +23,12 @@ def _keras_unstack_hack(ab):
        :param ab: stacked variables
        :return a, b: unstacked variables
     """
-    ndim = len(K.int_shape(ab))
-    if ndim == 0:
-        print('can not unstack with ndim=0')
-    else:
+    # ndim = len(K.int_shape(ab))
+    try:
         a = ab[..., 0]
         b = ab[..., 1]
+    except Exception as e:
+        raise NotImplementedError(f"Fix me, error: {e}")
     return a, b
 
 
@@ -76,11 +80,11 @@ def output_lambda(x, init_alpha=1.0, max_beta_value=5.0, scalefactor=None,
 
     """
     if max_beta_value is None or max_beta_value > 3:
-        if K.epsilon() > 1e-07 and K.backend() == 'tensorflow':
+        if EPSILON > 1e-07 and K.backend() == 'tensorflow':
             # TODO need to think this through lol
             message = "\
             Using tensorflow backend and allowing high `max_beta_value` may lead to\n\
-            gradient NaN during training unless `K.epsilon()` is small.\n\
+            gradient NaN during training unless `EPSILON` is small.\n\
             Call `keras.backend.set_epsilon(1e-08)` to lower epsilon \
             "
             warnings.warn(message)
@@ -96,7 +100,7 @@ def output_lambda(x, init_alpha=1.0, max_beta_value=5.0, scalefactor=None,
         a, b = scalefactor * a, scalefactor * b
 
     # Implicitly initialize alpha:
-    a = init_alpha * K.exp(a)
+    a = init_alpha * keras.activations.exponential(a)
 
     if max_beta_value > 1.05:  # some value >>1.0
         # shift to start around 1.0
@@ -105,9 +109,9 @@ def output_lambda(x, init_alpha=1.0, max_beta_value=5.0, scalefactor=None,
 
         b = b - _shift
 
-    b = max_beta_value * K.sigmoid(b)
+    b = max_beta_value * keras.activations.sigmoid(b)
 
-    x = K.stack([a, b], axis=-1)
+    x = tf.stack([a, b], axis=-1)
 
     return x
 
@@ -161,22 +165,22 @@ def _keras_split(y_true, y_pred):
 keras_split = _keras_split
 
 
-def loglik_discrete(y, u, a, b, epsilon=K.epsilon()):
-    hazard0 = K.pow((y + epsilon) / a, b)
-    hazard1 = K.pow((y + 1.0) / a, b)
+def loglik_discrete(y, u, a, b, epsilon=EPSILON):
+    hazard0 = tf.math.pow((y + epsilon) / a, b)
+    hazard1 = tf.math.pow((y + 1.0) / a, b)
 
     loglikelihoods = u * \
-        K.log(K.exp(hazard1 - hazard0) - (1.0 - epsilon)) - hazard1
+        tf.math.log(tf.math.exp(hazard1 - hazard0) - (1.0 - epsilon)) - hazard1
     return loglikelihoods
 
 
-def loglik_continuous(y, u, a, b, epsilon=K.epsilon()):
+def loglik_continuous(y, u, a, b, epsilon=EPSILON):
     ya = (y + epsilon) / a
-    loglikelihoods = u * (K.log(b) + b * K.log(ya)) - K.pow(ya, b)
+    loglikelihoods = u * (tf.math.log(b) + b * tf.math.log(ya)) - tf.math.pow(ya, b)
     return loglikelihoods
 
 
-def loglik_continuous_conditional_correction(y, u, a, b, epsilon=K.epsilon()):
+def loglik_continuous_conditional_correction(y, u, a, b, epsilon=EPSILON):
     """Integrated conditional excess loss.
         Explanation TODO
     """
@@ -243,10 +247,10 @@ class Loss(object):
             loglikelihoods = loglik_continuous(y, u, a, b)
 
         if self.clip_prob is not None:
-            loglikelihoods = K.clip(loglikelihoods, 
+            loglikelihoods = tf.clip_by_value(loglikelihoods, 
                 log(self.clip_prob), log(1 - self.clip_prob))
         if self.reduce_loss:
-            loss = -1.0 * K.mean(loglikelihoods, axis=-1)
+            loss = -1.0 * tf.reduce_mean(loglikelihoods, axis=-1)
         else:
             loss = -loglikelihoods
 
